@@ -3,17 +3,17 @@
  *
  * history:
  *   2023-05-18 - [piaodazhu]     Improve: progress bar
- *   2023-05-18 - [piaodazhu]     Fix: return value uncheck
+ *   2023-05-18 - [piaodazhu]     Fix: return value unchecked
  *   2023-05-18 - [piaodazhu]     Improve: better print message
  *   2023-05-17 - [piaodazhu]     Improve: support seek
  *   2023-05-17 - [piaodazhu]     Improve: support window resize
  *   2023-05-17 - [piaodazhu]     Fix: audio cannot be paused
- *   2023-05-16 - [piaodazhu]     Fix: cannot normally quit
+ *   2023-05-16 - [piaodazhu]     Fix: cannot exit normally
  *   2023-05-16 - [piaodazhu]     Fix: AVPacketList is deprecated
  * 
  *   2018-11-27 - [lei]     Create file: a simplest ffmpeg player
  *   2018-12-01 - [lei]     Playing audio
- *   2018-12-06 - [lei]     Playing audio&vidio
+ *   2018-12-06 - [lei]     Playing audio & video
  *   2019-01-06 - [lei]     Add audio resampling, fix bug of unsupported audio 
  *                          format(such as planar)
  *   2019-01-16 - [lei]     Sync video to audio.
@@ -21,7 +21,7 @@
  * details:
  *   A simple ffmpeg player.
  *
- * refrence:
+ * reference:
  *   ffplay.c in FFmpeg 4.1 project.
  *******************************************************************************/
 
@@ -39,7 +39,8 @@
 static player_stat_t *player_init(const char *p_input_file);
 static int player_deinit(player_stat_t *is);
 
-// 返回值：返回上一帧的pts更新值(上一帧pts+流逝的时间)
+// Function: get_clock
+// Returns the updated pts value of the previous frame (previous frame pts + elapsed time)
 double get_clock(play_clock_t *c)
 {
     if (*c->queue_serial != c->serial)
@@ -53,7 +54,7 @@ double get_clock(play_clock_t *c)
     else
     {
         double time = av_gettime_relative() / 1000000.0;
-        double ret = c->pts_drift + time;   // 展开得： c->pts + (time - c->last_updated)
+        double ret = c->pts_drift + time;   // Expanded: c->pts + (time - c->last_updated)
         return ret;
     }
 }
@@ -208,7 +209,8 @@ static void stream_toggle_pause(player_stat_t *is)
 {
     if (is->paused)
     {
-        // 这里表示当前是暂停状态，将切换到继续播放状态。在继续播放之前，先将暂停期间流逝的时间加到frame_timer中
+        // Here indicates the current state is paused, switch to playing state.
+        // Before resuming, add the elapsed time during pause to frame_timer.
         is->frame_timer += av_gettime_relative() / 1000000.0 - is->video_clk.last_updated;
         set_clock(&is->video_clk, get_clock(&is->video_clk), is->video_clk.serial);
     }
@@ -275,26 +277,26 @@ int player_running(const char *p_input_file)
     player_stat_t *is = NULL;
     int ret;
 
-    // 初始化队列，初始化SDL系统，分配player_stat_t结构体
+    // Initialize queues, SDL system, and allocate player_stat_t structure.
     is = player_init(p_input_file);
     if (is == NULL)
     {
         do_exit(is);
     }
 
-    // 文件解封装
+    // Demux the file.
     ret = open_demux(is);
     if (ret < 0) {
         do_exit(is);
     }
 
-    // 视频解码与播放
+    // Open and decode the video stream for playback.
     ret = open_video(is);
     if (ret < 0) {
         do_exit(is);
     }
 
-    // 音频解码与播放
+    // Open and decode the audio stream for playback.
     ret = open_audio(is);
     if (ret < 0) {
         do_exit(is);
@@ -312,7 +314,8 @@ int player_running(const char *p_input_file)
     while (1)
     {
         SDL_PumpEvents();
-        // SDL event队列为空，则在while循环中播放视频帧。否则从队列头部取一个event，退出当前函数，在上级函数中处理event
+        // If the SDL event queue is empty, play video frames within this while loop.
+        // If there's an event in the queue, exit this function and let the upper-level function handle the event.
         while (!SDL_PeepEvents(&event, 1, SDL_GETEVENT, SDL_FIRSTEVENT, SDL_LASTEVENT))
         {
             now = is->audio_clk.pts;
@@ -331,26 +334,26 @@ int player_running(const char *p_input_file)
 
         switch (event.type) {
         case SDL_KEYDOWN:
-            if (event.key.keysym.sym == SDLK_ESCAPE) // ESC: 退出
+            if (event.key.keysym.sym == SDLK_ESCAPE) // Exit on ESC key.
             {
                 do_exit(is);
                 break;
             }
 
             switch (event.key.keysym.sym) {
-            case SDLK_SPACE:        // 空格键: 暂停
+            case SDLK_SPACE:        // Pause or resume playback on SPACE key.
                 toggle_pause(is);
                 break;
-            case SDLK_LEFT:         // 方向键: 快进快退
+            case SDLK_LEFT:         // Seek backward on LEFT arrow key.
                 incr = -10.0;
                 goto do_seek;
-            case SDLK_RIGHT:
+            case SDLK_RIGHT:        // Seek forward on RIGHT arrow key.
                 incr = 10.0;
                 goto do_seek;
-            case SDLK_UP:
+            case SDLK_UP:           // Fast forward on UP arrow key.
                 incr = 60.0;
                 goto do_seek;
-            case SDLK_DOWN:
+            case SDLK_DOWN:         // Fast backward on DOWN arrow key.
                 incr = -60.0;
             do_seek:
                     pos = is->audio_clk.pts;
@@ -364,7 +367,7 @@ int player_running(const char *p_input_file)
             }
             break;
         case SDL_WINDOWEVENT:
-            // 窗口大小伸缩 -> 画面适应
+            // Handle window resizing to adjust video display.
             switch (event.window.event) {
                 case SDL_WINDOWEVENT_SIZE_CHANGED:
                     is->sdl_video.window_width = event.window.data1;

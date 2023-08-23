@@ -19,8 +19,7 @@ int packet_queue_init(packet_queue_t *q)
     return 0;
 }
 
-
-// 写队列尾部。pkt是一包还未解码的音频数据
+// Enqueue a packet at the end of the queue. 'pkt' is a packet containing audio data that hasn't been decoded yet.
 int packet_queue_put(packet_queue_t *q, AVPacket *pkt)
 {
     packet_listnode_t *pkt_listnode;
@@ -42,7 +41,7 @@ int packet_queue_put(packet_queue_t *q, AVPacket *pkt)
 
     SDL_LockMutex(q->mutex);
 
-    if (!q->last_pkt)   // 队列为空
+    if (!q->last_pkt)   // The queue is empty
     {
         q->first_pkt = pkt_listnode;
     }
@@ -53,14 +52,14 @@ int packet_queue_put(packet_queue_t *q, AVPacket *pkt)
     q->last_pkt = pkt_listnode;
     q->nb_packets++;
     q->size += pkt_listnode->pkt->size;
-    // 发个条件变量的信号：重启等待q->cond条件变量的一个线程
+    // Send a signal to the condition variable: wake up a thread waiting on q->cond condition variable.
     SDL_CondSignal(q->cond);
 
     SDL_UnlockMutex(q->mutex);
     return 0;
 }
 
-// 读队列头部。
+// Dequeue a packet from the front of the queue.
 int packet_queue_get(packet_queue_t *q, AVPacket *pkt, int block)
 {
     packet_listnode_t *p_pkt_node;
@@ -71,7 +70,7 @@ int packet_queue_get(packet_queue_t *q, AVPacket *pkt, int block)
     while (1)
     {
         p_pkt_node = q->first_pkt;
-        if (p_pkt_node)             // 队列非空，取一个出来
+        if (p_pkt_node)             // The queue is not empty, take a packet out
         {
             q->first_pkt = p_pkt_node->next;
             if (!q->first_pkt)
@@ -86,14 +85,13 @@ int packet_queue_get(packet_queue_t *q, AVPacket *pkt, int block)
             ret = 1;
             break;
         }
-        else if (!block)            // 队列空且阻塞标志无效，则立即退出
+        else if (!block)            // The queue is empty and blocking flag is invalid, exit immediately
         {
             ret = 0;
             break;
         }
-        else                        // 队列空且阻塞标志有效，则等待
+        else                        // The queue is empty and blocking flag is valid, wait
         {
-            // SDL_CondWait(q->cond, q->mutex);
             int signaled = 1;
             while (signaled && !q->abort_request) {
                 signaled = SDL_CondWaitTimeout(q->cond, q->mutex, 20);
@@ -110,7 +108,7 @@ int packet_queue_get(packet_queue_t *q, AVPacket *pkt, int block)
 
 int packet_queue_put_nullpacket(packet_queue_t *q, int stream_index)
 {
-    // just alloc in stack
+    // Allocate a packet on the stack
     AVPacket *pkt = av_packet_alloc();
     pkt->data = NULL;
     pkt->size = 0;
@@ -155,4 +153,3 @@ void packet_queue_abort(packet_queue_t *q)
 
     SDL_UnlockMutex(q->mutex);
 }
-

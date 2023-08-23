@@ -21,15 +21,14 @@ static int queue_picture(player_stat_t *is, AVFrame *src_frame, double pts, doub
     vp->pos = pos;
     //vp->serial = serial;
 
-    // 将AVFrame拷入队列相应位置
+    // Copy AVFrame into the corresponding position in the queue
     av_frame_move_ref(vp->frame, src_frame);
-    // 更新队列计数及写索引
+    // Update queue count and write index
     frame_queue_push(&is->video_frm_queue);
     return 0;
 }
 
-
-// 从packet_queue中取一个packet，解码生成frame
+// Decode a packet from the packet_queue and generate a frame
 static int video_decode_frame(AVCodecContext *p_codec_ctx, packet_queue_t *p_pkt_queue, AVFrame *frame)
 {
     int ret;
@@ -41,14 +40,14 @@ static int video_decode_frame(AVCodecContext *p_codec_ctx, packet_queue_t *p_pkt
         while (1)
         {
             if (p_pkt_queue->abort_request) {
-                av_log(NULL, AV_LOG_DEBUG, "video_decode_frame receive quit\n");
+                av_log(NULL, AV_LOG_DEBUG, "video_decode_frame received quit\n");
                 return -1;
             }
-            // 3. 从解码器接收frame
-            // 3.1 一个视频packet含一个视频frame
-            //     解码器缓存一定数量的packet后，才有解码后的frame输出
-            //     frame输出顺序是按pts的顺序，如IBBPBBP
-            //     frame->pkt_pos变量是此frame对应的packet在视频文件中的偏移地址，值同pkt.pos
+            // Step 3. Receive a frame from the decoder
+            // 3.1 A video packet contains a video frame
+            //     The decoder outputs frames after caching a certain number of packets
+            //     Frames are output in the order of pts, such as IBBPBBP
+            //     frame->pkt_pos holds the offset of the packet corresponding to this frame in the video file, same as pkt.pos
             ret = avcodec_receive_frame(p_codec_ctx, frame);
             if (ret < 0)
             {
@@ -74,10 +73,10 @@ static int video_decode_frame(AVCodecContext *p_codec_ctx, packet_queue_t *p_pkt
                 frame->pts = frame->best_effort_timestamp;
                 //frame->pts = frame->pkt_dts;
 
-                return 1;   // 成功解码得到一个视频帧或一个音频帧，则返回
+                return 1;   // Successfully decoded a video frame or an audio frame, return
             }
         }
-        // 1. 取出一个packet。使用pkt对应的serial赋值给d->pkt_serial
+        // Step 1. Take a packet from the packet_queue. Assign the packet's serial to d->pkt_serial
         if (packet_queue_get(p_pkt_queue, &pkt, true) < 0)
         {
             av_log(NULL, AV_LOG_DEBUG, "get packet error\n");
@@ -86,14 +85,14 @@ static int video_decode_frame(AVCodecContext *p_codec_ctx, packet_queue_t *p_pkt
 
         if (pkt.data == NULL)
         {
-            // 复位解码器内部状态/刷新内部缓冲区。
+            // Reset the decoder's internal state / flush internal buffers.
             avcodec_flush_buffers(p_codec_ctx);
         }
         else
         {
-            // 2. 将packet发送给解码器
-            //    发送packet的顺序是按dts递增的顺序，如IPBBPBB
-            //    pkt.pos变量可以标识当前packet在视频文件中的地址偏移
+            // Step 2. Send the packet to the decoder
+            //         Packets are sent in increasing dts order, such as IPBBPBB
+            //         pkt.pos indicates the offset of the current packet in the video file
             if (avcodec_send_packet(p_codec_ctx, &pkt) == AVERROR(EAGAIN))
             {
                 av_log(NULL, AV_LOG_ERROR, "receive_frame and send_packet both returned EAGAIN, which is an API violation.\n");
@@ -104,7 +103,7 @@ static int video_decode_frame(AVCodecContext *p_codec_ctx, packet_queue_t *p_pkt
     }
 }
 
-// 将视频包解码得到视频帧，然后写入picture队列
+// Decode video packets to get video frames, then enqueue them to the picture queue
 static int video_decode_thread(void *arg)
 {
     player_stat_t *is = (player_stat_t *)arg;
@@ -130,9 +129,9 @@ static int video_decode_thread(void *arg)
             goto exit;
         }
         
-        duration = (frame_rate.num && frame_rate.den ? av_q2d((AVRational){frame_rate.den, frame_rate.num}) : 0);   // 当前帧播放时长
-        pts = (p_frame->pts == AV_NOPTS_VALUE) ? NAN : p_frame->pts * av_q2d(tb);   // 当前帧显示时间戳
-        ret = queue_picture(is, p_frame, pts, duration, p_frame->pkt_pos);   // 将当前帧压入frame_queue
+        duration = (frame_rate.num && frame_rate.den ? av_q2d((AVRational){frame_rate.den, frame_rate.num}) : 0);   // Duration of the current frame
+        pts = (p_frame->pts == AV_NOPTS_VALUE) ? NAN : p_frame->pts * av_q2d(tb);   // Presentation timestamp of the current frame
+        ret = queue_picture(is, p_frame, pts, duration, p_frame->pkt_pos);   // Enqueue the current frame into the frame_queue
         av_frame_unref(p_frame);
 
         if (ret < 0)
@@ -148,9 +147,9 @@ exit:
     return 0;
 }
 
-// 根据视频时钟与同步时钟(如音频时钟)的差值，校正delay值，使视频时钟追赶或等待同步时钟
-// 输入参数delay是上一帧播放时长，即上一帧播放后应延时多长时间后再播放当前帧，通过调节此值来调节当前帧播放快慢
-// 返回值delay是将输入参数delay经校正后得到的值
+// Adjust the delay value based on the difference between the video clock and the sync clock (e.g., audio clock)
+// The input parameter "delay" is the duration of the previous frame, indicating how long to wait before playing the current frame after the previous frame
+// The return value "delay" is the adjusted value after correction
 static double compute_target_delay(double delay, player_stat_t *is)
 {
     double sync_threshold, diff = 0;
@@ -159,26 +158,26 @@ static double compute_target_delay(double delay, player_stat_t *is)
 
     /* if video is slave, we try to correct big delays by
        duplicating or deleting a frame */
-    // 视频时钟与同步时钟(如音频时钟)的差异，时钟值是上一帧pts值(实为：上一帧pts + 上一帧至今流逝的时间差)
+    // Difference between the video clock and the sync clock (e.g., audio clock), where the clock value is the pts of the previous frame (in reality: pts of the previous frame + elapsed time since the previous frame)
     diff = get_clock(&is->video_clk) - get_clock(&is->audio_clk);
-    // delay是上一帧播放时长：当前帧(待播放的帧)播放时间与上一帧播放时间差理论值
-    // diff是视频时钟与同步时钟的差值
+    // "delay" is the duration of the previous frame: the theoretical difference between the display time of the current frame and the display time of the previous frame
+    // "diff" is the difference between the video clock and the sync clock
 
     /* skip or repeat frame. We take into account the
        delay to compute the threshold. I still don't know
        if it is the best guess */
-    // 若delay < AV_SYNC_THRESHOLD_MIN，则同步域值为AV_SYNC_THRESHOLD_MIN
-    // 若delay > AV_SYNC_THRESHOLD_MAX，则同步域值为AV_SYNC_THRESHOLD_MAX
-    // 若AV_SYNC_THRESHOLD_MIN < delay < AV_SYNC_THRESHOLD_MAX，则同步域值为delay
+    // If delay < AV_SYNC_THRESHOLD_MIN, then sync_threshold is set to AV_SYNC_THRESHOLD_MIN
+    // If delay > AV_SYNC_THRESHOLD_MAX, then sync_threshold is set to AV_SYNC_THRESHOLD_MAX
+    // If AV_SYNC_THRESHOLD_MIN < delay < AV_SYNC_THRESHOLD_MAX, then sync_threshold is set to delay
     sync_threshold = FFMAX(AV_SYNC_THRESHOLD_MIN, FFMIN(AV_SYNC_THRESHOLD_MAX, delay));
     if (!isnan(diff))
     {
-        if (diff <= -sync_threshold)        // 视频时钟落后于同步时钟，且超过同步域值
-            delay = FFMAX(0, delay + diff); // 当前帧播放时刻落后于同步时钟(delay+diff<0)则delay=0(视频追赶，立即播放)，否则delay=delay+diff
-        else if (diff >= sync_threshold && delay > AV_SYNC_FRAMEDUP_THRESHOLD)  // 视频时钟超前于同步时钟，且超过同步域值，但上一帧播放时长超长
-            delay = delay + diff;           // 仅仅校正为delay=delay+diff，主要是AV_SYNC_FRAMEDUP_THRESHOLD参数的作用
-        else if (diff >= sync_threshold)    // 视频时钟超前于同步时钟，且超过同步域值
-            delay = 2 * delay;              // 视频播放要放慢脚步，delay扩大至2倍
+        if (diff <= -sync_threshold)        // Video clock lags behind the sync clock and the difference exceeds the sync threshold
+            delay = FFMAX(0, delay + diff); // If the current frame's display time is behind the sync clock (delay+diff<0), set delay to 0 (video catching up, play immediately), otherwise delay=delay+diff
+        else if (diff >= sync_threshold && delay > AV_SYNC_FRAMEDUP_THRESHOLD)  // Video clock is ahead of the sync clock, and the difference exceeds the sync threshold, but the duration of the previous frame is too long
+            delay = delay + diff;           // Adjust only by delay=delay+diff, mainly due to the effect of the AV_SYNC_FRAMEDUP_THRESHOLD parameter
+        else if (diff >= sync_threshold)    // Video clock is ahead of the sync clock and the difference exceeds the sync threshold
+            delay = 2 * delay;              // Slow down video playback, double the delay
     }
 
     av_log(NULL, AV_LOG_TRACE, "video: delay=%0.3f A-V=%f\n", delay, -diff);
@@ -201,8 +200,8 @@ static double vp_duration(player_stat_t *is, frame_t *vp, frame_t *nextvp) {
 
 static void update_video_pts(player_stat_t *is, double pts, int64_t pos, int serial) {
     /* update current video pts */
-    set_clock(&is->video_clk, pts, serial);            // 更新vidclock
-    //-sync_clock_to_slave(&is->extclk, &is->vidclk);  // 将extclock同步到vidclock
+    set_clock(&is->video_clk, pts, serial);            // Update vidclock
+    //-sync_clock_to_slave(&is->extclk, &is->vidclk);  // Synchronize extclock to vidclock
 }
 
 static void video_display(player_stat_t *is)
@@ -211,13 +210,13 @@ static void video_display(player_stat_t *is)
 
     vp = frame_queue_peek_last(&is->video_frm_queue);
 
-    // 图像转换：p_frm_raw->data ==> p_frm_yuv->data
-    // 将源图像中一片连续的区域经过处理后更新到目标图像对应区域，处理的图像区域必须逐行连续
-    // plane: 如YUV有Y、U、V三个plane，RGB有R、G、B三个plane
-    // slice: 图像中一片连续的行，必须是连续的，顺序由顶部到底部或由底部到顶部
-    // stride/pitch: 一行图像所占的字节数，Stride=BytesPerPixel*Width+Padding，注意对齐
-    // AVFrame.*data[]: 每个数组元素指向对应plane
-    // AVFrame.linesize[]: 每个数组元素表示对应plane中一行图像所占的字节数
+    // Image conversion: p_frm_raw->data ==> p_frm_yuv->data
+    // Update a destination image region using a processed source image region; the processed region must be contiguous line by line
+    // Plane: For example, YUV has Y, U, V planes, and RGB has R, G, B planes
+    // Slice: A contiguous region of lines in the image, must be continuous, ordered from top to bottom or bottom to top
+    // Stride/pitch: Number of bytes in one row of the image, Stride=BytesPerPixel*Width+Padding, pay attention to alignment
+    // AVFrame.*data[]: Each array element points to the corresponding plane
+    // AVFrame.linesize[]: Each array element represents the number of bytes in one row of the corresponding plane
     sws_scale(is->img_convert_ctx,                    // sws context
               (const uint8_t *const *)vp->frame->data,// src slice
               vp->frame->linesize,                    // src stride
@@ -227,7 +226,7 @@ static void video_display(player_stat_t *is)
               is->p_frm_yuv->linesize                 // dst strides
              );
     
-    // 使用新的YUV像素数据更新Texture
+    // Update Texture with new YUV pixel data
 
     is->sdl_video.rect.w = is->sdl_video.width;
     is->sdl_video.rect.h = is->sdl_video.height;
@@ -244,17 +243,17 @@ static void video_display(player_stat_t *is)
                          is->p_frm_yuv->linesize[2]     // v pitch
                         );
 
-    // 使用特定颜色清空当前渲染目标
+    // Clear the current rendering target with a specific color
     SDL_RenderClear(is->sdl_video.renderer);
 
-    // 将更新后的Texture拷贝到窗口的指定矩形区域(is->sdl_video.rect)
+    // Copy the updated Texture to the specified rectangular area of the window (is->sdl_video.rect)
     SDL_RenderCopy(is->sdl_video.renderer,              // sdl renderer
                    is->sdl_video.texture,               // sdl texture
                    NULL,                                // src rect, if NULL copy texture
                    &is->sdl_video.rect                  // dst rect
                   );
     
-    // 执行渲染，更新屏幕显示
+    // Perform rendering to update the screen display
     SDL_RenderPresent(is->sdl_video.renderer);
 }
 
@@ -266,8 +265,8 @@ static void video_refresh(void *opaque, double *remaining_time)
     static bool first_frame = true;
     // av_log(NULL, AV_LOG_INFO, "frame_time=%f, video=%f, audio=%f\n", is->frame_timer, is->video_clk.pts, is->audio_clk.pts);
 retry:
-    if (frame_queue_nb_remaining(&is->video_frm_queue) == 0)  // 所有帧已显示
-    {    
+    if (frame_queue_nb_remaining(&is->video_frm_queue) == 0)
+    {
         // nothing to do, no picture to display in the queue
         return;
     }
@@ -276,37 +275,37 @@ retry:
     frame_t *vp, *lastvp;
 
     /* dequeue the picture */
-    lastvp = frame_queue_peek_last(&is->video_frm_queue);     // 上一帧：上次已显示的帧
-    vp = frame_queue_peek(&is->video_frm_queue);              // 当前帧：当前待显示的帧
+    lastvp = frame_queue_peek_last(&is->video_frm_queue);     // Previous frame: the last displayed frame
+    vp = frame_queue_peek(&is->video_frm_queue);              // Current frame: the frame to be displayed
 
-    // lastvp和vp不是同一播放序列(一个seek会开始一个新播放序列)，将frame_timer更新为当前时间
+    // If lastvp and vp are not from the same playback sequence (a seek starts a new playback sequence), update frame_timer to the current time
     if (first_frame)
     {
         is->frame_timer = av_gettime_relative() / 1000000.0;
         first_frame = false;
     }
 
-    // 暂停处理：不停播放上一帧图像
+    // Pause handling: keep displaying the last displayed image
     if (is->paused)
         goto display;
 
     /* compute nominal last_duration */
-    last_duration = vp_duration(is, lastvp, vp);        // 上一帧播放时长：vp->pts - lastvp->pts
-    delay = compute_target_delay(last_duration, is);    // 根据视频时钟和同步时钟的差值，计算delay值
+    last_duration = vp_duration(is, lastvp, vp);        // Duration of the last frame displayed: vp->pts - lastvp->pts
+    delay = compute_target_delay(last_duration, is);    // Calculate delay based on video clock and synchronization clock difference
     // av_log(NULL, AV_LOG_DEBUG, "%f,%f\n", last_duration, delay);
 
-    time= av_gettime_relative()/1000000.0;
-    // 当前帧播放时刻(is->frame_timer+delay)大于当前时刻(time)，表示播放时刻未到
+    time = av_gettime_relative() / 1000000.0;
+    // If the current frame's playback time (is->frame_timer + delay) is greater than the current time (time), it's not time to play yet
     if (time < is->frame_timer + delay) {
-        // 播放时刻未到，则更新刷新时间remaining_time为当前时刻到下一播放时刻的时间差
+        // If playback time has not arrived, update remaining_time to the time difference between current time and the next playback time
         *remaining_time = FFMIN(is->frame_timer + delay - time, *remaining_time);
-        // 播放时刻未到，则不播放，直接返回
+        // If playback time hasn't arrived, don't play the frame, just return
         return;
     }
 
-    // 更新frame_timer值
+    // Update frame_timer value
     is->frame_timer += delay;
-    // 校正frame_timer值：若frame_timer落后于当前系统时间太久(超过最大同步域值)，则更新为当前系统时间
+    // Adjust frame_timer value: if frame_timer lags too far behind the current system time (more than AV_SYNC_THRESHOLD_MAX), update it to the current system time
     if (delay > 0 && time - is->frame_timer > AV_SYNC_THRESHOLD_MAX)
     {
         is->frame_timer = time;
@@ -316,28 +315,28 @@ retry:
     if (!isnan(vp->pts))
     {
         // av_log(NULL, AV_LOG_DEBUG, "update ts from %f to %f\n", is->video_clk.pts, vp->pts);
-        update_video_pts(is, vp->pts, vp->pos, vp->serial); // 更新视频时钟：时间戳、时钟时间
+        update_video_pts(is, vp->pts, vp->pos, vp->serial); // Update video clock: timestamp, clock time
     }
     SDL_UnlockMutex(is->video_frm_queue.mutex);
 
-    // 是否要丢弃未能及时播放的视频帧
-    if (frame_queue_nb_remaining(&is->video_frm_queue) > 1)  // 队列中未显示帧数>1(只有一帧则不考虑丢帧)
-    {         
-        frame_t *nextvp = frame_queue_peek_next(&is->video_frm_queue);  // 下一帧：下一待显示的帧
-        duration = vp_duration(is, vp, nextvp);             // 当前帧vp播放时长 = nextvp->pts - vp->pts
-        // 当前帧vp未能及时播放，即下一帧播放时刻(is->frame_timer+duration)小于当前系统时刻(time)
+    // Determine if we need to discard frames that couldn't be displayed in time
+    if (frame_queue_nb_remaining(&is->video_frm_queue) > 1)  // Number of undisplayed frames in the queue > 1 (no need to drop frames if only one frame is present)
+    {
+        frame_t *nextvp = frame_queue_peek_next(&is->video_frm_queue);  // Next frame: the next frame to be displayed
+        duration = vp_duration(is, vp, nextvp);             // Duration of the current frame vp: nextvp->pts - vp->pts
+        // If the current frame vp couldn't be displayed in time, i.e., the playback time of the next frame (is->frame_timer + duration) is smaller than the current system time (time)
         if (time > is->frame_timer + duration)
         {
-            frame_queue_next(&is->video_frm_queue);   // 删除上一帧已显示帧，即删除lastvp，读指针加1(从lastvp更新到vp)
+            frame_queue_next(&is->video_frm_queue);   // Remove the last displayed frame (lastvp), move the read pointer by 1 (from lastvp to vp)
             goto retry;
         }
     }
 
-    // 删除当前读指针元素，读指针+1。若未丢帧，读指针从lastvp更新到vp；若有丢帧，读指针从vp更新到nextvp
+    // Remove the current read pointer element, move the read pointer by 1. If no frames are dropped, the read pointer goes from lastvp to vp. If frames are dropped, the read pointer goes from vp to nextvp
     frame_queue_next(&is->video_frm_queue);
 
 display:
-    video_display(is);                      // 取出当前帧vp(若有丢帧是nextvp)进行播放
+    video_display(is);                      // Display the current frame vp (nextvp if frames were dropped)
 }
 
 static int video_playing_thread(void *arg)
@@ -352,9 +351,9 @@ static int video_playing_thread(void *arg)
             av_usleep((unsigned)(remaining_time * 1000000.0));
         }
         remaining_time = REFRESH_RATE;
-        // 立即显示当前帧，或延时remaining_time后再显示
+        // Display the current frame immediately or after a delay of remaining_time
         video_refresh(is, &remaining_time);
-        
+
         if (is->abort_request) {
             av_log(NULL, AV_LOG_DEBUG, "playing thread receive quit\n");
             break;
@@ -378,20 +377,20 @@ static int open_video_playing(void *arg)
         return -1;
     }
 
-    // 为AVFrame.*data[]手工分配缓冲区，用于存储sws_scale()中目的帧视频数据
+    // Manually allocate buffer for AVFrame.*data[] to store destination frame video data for sws_scale()
     buf_size = av_image_get_buffer_size(AV_PIX_FMT_YUV420P, 
                                         is->p_vcodec_ctx->width, 
                                         is->p_vcodec_ctx->height, 
                                         1
                                         );
-    // buffer将作为p_frm_yuv的视频数据缓冲区
+    // 'buffer' will be the video data buffer for 'p_frm_yuv'
     buffer = (uint8_t *)av_malloc(buf_size);
     if (buffer == NULL)
     {
         av_log(NULL, AV_LOG_FATAL, "av_malloc() for buffer failed\n");
         return -1;
     }
-    // 使用给定参数设定p_frm_yuv->data和p_frm_yuv->linesize
+    // Set 'p_frm_yuv->data' and 'p_frm_yuv->linesize' using given parameters
     ret = av_image_fill_arrays(is->p_frm_yuv->data,     // dst data[]
                                is->p_frm_yuv->linesize, // dst linesize[]
                                buffer,                  // src buffer
@@ -406,12 +405,12 @@ static int open_video_playing(void *arg)
         return -1;;
     }
 
-    // A2. 初始化SWS context，用于后续图像转换
-    //     此处第6个参数使用的是FFmpeg中的像素格式，对比参考注释B3
-    //     FFmpeg中的像素格式AV_PIX_FMT_YUV420P对应SDL中的像素格式SDL_PIXELFORMAT_IYUV
-    //     如果解码后得到图像的不被SDL支持，不进行图像转换的话，SDL是无法正常显示图像的
-    //     如果解码后得到图像的能被SDL支持，则不必进行图像转换
-    //     这里为了编码简便，统一转换为SDL支持的格式AV_PIX_FMT_YUV420P==>SDL_PIXELFORMAT_IYUV
+    // A2. Initialize SWS context for future image conversion
+    //     The 6th parameter here uses FFmpeg pixel formats, compared with comment B3
+    //     Pixel format AV_PIX_FMT_YUV420P in FFmpeg corresponds to SDL pixel format SDL_PIXELFORMAT_IYUV
+    //     If the decoded image format is not supported by SDL, image conversion is necessary for proper display
+    //     If the decoded image format is supported by SDL, no need for image conversion
+    //     Here, for simplicity, we convert all to a format supported by SDL: AV_PIX_FMT_YUV420P ==> SDL_PIXELFORMAT_IYUV
     is->img_convert_ctx = sws_getContext(is->p_vcodec_ctx->width,   // src width
                                          is->p_vcodec_ctx->height,  // src height
                                          is->p_vcodec_ctx->pix_fmt, // src format
@@ -429,17 +428,17 @@ static int open_video_playing(void *arg)
         return -1;
     }
 
-    // SDL_Rect赋值
+    // Set SDL_Rect values
     is->sdl_video.rect.x = 0;
     is->sdl_video.rect.y = 0;
     is->sdl_video.rect.w = is->p_vcodec_ctx->width;
     is->sdl_video.rect.h = is->p_vcodec_ctx->height;
 
-    // 1. 创建SDL窗口，SDL 2.0支持多窗口
-    //    SDL_Window即运行程序后弹出的视频窗口，同SDL 1.x中的SDL_Surface
+    // 1. Create SDL window, SDL 2.0 supports multiple windows
+    //    SDL_Window is the video window that pops up when the program runs, analogous to SDL_Surface in SDL 1.x
     is->sdl_video.window = SDL_CreateWindow("simple ffplayer", 
-                              SDL_WINDOWPOS_UNDEFINED,// 不关心窗口X坐标
-                              SDL_WINDOWPOS_UNDEFINED,// 不关心窗口Y坐标
+                              SDL_WINDOWPOS_UNDEFINED,
+                              SDL_WINDOWPOS_UNDEFINED,
                               is->sdl_video.rect.w, 
                               is->sdl_video.rect.h,
                               SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE
@@ -450,8 +449,8 @@ static int open_video_playing(void *arg)
         return -1;
     }
 
-    // 2. 创建SDL_Renderer
-    //    SDL_Renderer：渲染器
+    // 2. Create SDL_Renderer
+    //    SDL_Renderer: the renderer
     is->sdl_video.renderer = SDL_CreateRenderer(is->sdl_video.window, -1, 0);
     if (is->sdl_video.renderer == NULL)
     {  
@@ -459,8 +458,8 @@ static int open_video_playing(void *arg)
         return -1;
     }
 
-    // 3. 创建SDL_Texture
-    //    一个SDL_Texture对应一帧YUV数据，同SDL 1.x中的SDL_Overlay
+    // 3. Create SDL_Texture
+    //    An SDL_Texture corresponds to a frame of YUV data, similar to SDL_Overlay in SDL 1.x
    is->sdl_video.texture = SDL_CreateTexture(is->sdl_video.renderer, 
                                     SDL_PIXELFORMAT_IYUV, 
                                     SDL_TEXTUREACCESS_STREAMING,
@@ -486,34 +485,34 @@ static int open_video_stream(player_stat_t *is)
     AVStream *p_stream = is->p_video_stream;
     int ret;
 
-    // 1. 为视频流构建解码器AVCodecContext
-    // 1.1 获取解码器参数AVCodecParameters
+    // 1. Build decoder AVCodecContext for the video stream
+    // 1.1 Get codec parameters AVCodecParameters for decoding
     p_codec_par = p_stream->codecpar;
 
-    // 1.2 获取解码器
+    // 1.2 Get the decoder
     p_codec = avcodec_find_decoder(p_codec_par->codec_id);
     if (p_codec == NULL)
     {
-        av_log(NULL, AV_LOG_FATAL, "Cann't find codec!\n");
+        av_log(NULL, AV_LOG_FATAL, "Cannot find codec!\n");
         return -1;
     }
 
-    // 1.3 构建解码器AVCodecContext
-    // 1.3.1 p_codec_ctx初始化：分配结构体，使用p_codec初始化相应成员为默认值
+    // 1.3 Build decoder AVCodecContext
+    // 1.3.1 Initialize p_codec_ctx: allocate structure and initialize relevant members to default values using p_codec
     p_codec_ctx = avcodec_alloc_context3(p_codec);
     if (p_codec_ctx == NULL)
     {
         av_log(NULL, AV_LOG_FATAL, "avcodec_alloc_context3() failed\n");
         return -1;
     }
-    // 1.3.2 p_codec_ctx初始化：p_codec_par ==> p_codec_ctx，初始化相应成员
+    // 1.3.2 Initialize p_codec_ctx: Copy parameters from p_codec_par to p_codec_ctx and initialize relevant members
     ret = avcodec_parameters_to_context(p_codec_ctx, p_codec_par);
     if (ret < 0)
     {
         av_log(NULL, AV_LOG_FATAL, "avcodec_parameters_to_context() failed\n");
         return -1;
     }
-    // 1.3.3 p_codec_ctx初始化：使用p_codec初始化p_codec_ctx，初始化完成
+    // 1.3.3 Initialize p_codec_ctx: Initialize p_codec_ctx using p_codec, completing initialization
     ret = avcodec_open2(p_codec_ctx, p_codec, NULL);
     if (ret < 0)
     {
@@ -523,10 +522,10 @@ static int open_video_stream(player_stat_t *is)
 
     is->p_vcodec_ctx = p_codec_ctx;
     
-    // 2. 创建视频解码线程
+    // 2. Create a video decoding thread
     is->video_dec_tid = SDL_CreateThread(video_decode_thread, "video decode thread", is);
 
-    // 3. record default display size
+    // 3. Record default display size
     is->sdl_video.width  = p_codec_par->width;
     is->sdl_video.height = p_codec_par->height;
     is->sdl_video.height_width_ratio = (double)(1.0 * is->sdl_video.height) / is->sdl_video.width;
@@ -538,15 +537,16 @@ static int open_video_stream(player_stat_t *is)
 int open_video(player_stat_t *is)
 {
     int ret;
-    // 初始化视频解码器，启动视频解码线程
+    // Initialize video decoder and start video decoding thread
     ret = open_video_stream(is);
     if (ret < 0) {
         return ret;
     }
-    // 初始化图像转换上下文和渲染器，启动视频显示线程
+    // Initialize image conversion context and renderer, start video display thread
     ret = open_video_playing(is);
     if (ret < 0) {
         return ret;
     }
     return 0;
 }
+
